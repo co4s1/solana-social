@@ -1,11 +1,10 @@
-// src/components/ProfileCreate.js
-import { useState } from 'react';
+// src/pages/create-profile.js
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useProfile } from '../hooks/useProfile';
 import ImageUpload from '../components/ImageUpload';
 import { MAX_CHAR_COUNT } from '../utils/constants';
-import { ensureWalletConnected } from '../utils/wallet-helper';
 
 export default function ProfileCreate() {
   const [username, setUsername] = useState('');
@@ -13,15 +12,70 @@ export default function ProfileCreate() {
   const [imageFile, setImageFile] = useState(null);
   const [error, setError] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [walletReady, setWalletReady] = useState(false);
   const { createProfile } = useProfile();
   const router = useRouter();
-  const wallet = useWallet();
+  const { connected, publicKey, wallet, connecting } = useWallet();
+
+  // Check wallet readiness
+  useEffect(() => {
+    // Clear error when wallet changes
+    setError(null);
+    
+    // Check if wallet is ready
+    const checkWalletReady = () => {
+      if (!connected || !publicKey) {
+        console.log("Wallet not connected");
+        setWalletReady(false);
+        return false;
+      }
+      
+      if (!wallet || !wallet.adapter) {
+        console.log("Wallet adapter not initialized");
+        setWalletReady(false);
+        return false;
+      }
+      
+      if (connecting) {
+        console.log("Wallet still connecting");
+        setWalletReady(false);
+        return false;
+      }
+      
+      // Extra check: see if adapter publicKey matches wallet publicKey
+      if (wallet.adapter.publicKey && !wallet.adapter.publicKey.equals(publicKey)) {
+        console.log("Wallet public keys don't match");
+        setWalletReady(false);
+        return false;
+      }
+      
+      console.log("Wallet is ready");
+      setWalletReady(true);
+      return true;
+    };
+    
+    // Initial check
+    checkWalletReady();
+    
+    // Set up polling to check wallet readiness every second
+    const intervalId = setInterval(() => {
+      checkWalletReady();
+    }, 1000);
+    
+    // Clean up interval
+    return () => clearInterval(intervalId);
+  }, [connected, publicKey, wallet, connecting]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     
     if (!username) {
-      alert('Username is required');
+      setError('Username is required');
+      return;
+    }
+    
+    if (!walletReady) {
+      setError("Wallet is not ready. Please wait a moment or try reconnecting your wallet.");
       return;
     }
 
@@ -29,19 +83,29 @@ export default function ProfileCreate() {
       setError(null);
       setIsSubmitting(true);
       
-      // Ensure wallet is properly connected before creating profile
-      const isWalletReady = await ensureWalletConnected(wallet);
-      
-      if (!isWalletReady) {
+      // Final wallet readiness check before submitting
+      if (!connected || !publicKey || !wallet || !wallet.adapter) {
         setError("Wallet is not ready. Please try reconnecting your wallet and try again.");
+        setIsSubmitting(false);
         return;
       }
 
+      // Delay slightly to ensure wallet is fully ready
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
       await createProfile.mutateAsync({ username, bio, imageFile });
       router.push('/');
     } catch (error) {
       console.error('Error creating profile:', error);
-      setError(error.message || 'Failed to create profile. Please try again.');
+      
+      // More detailed error messages
+      if (error.message && error.message.includes("wallet")) {
+        setError("Wallet error: " + error.message);
+      } else if (error.message && error.message.includes("timeout")) {
+        setError("Request timed out. The Solana network might be congested.");
+      } else {
+        setError(error.message || 'Failed to create profile. Please try again.');
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -59,10 +123,24 @@ export default function ProfileCreate() {
             <button 
               onClick={async () => {
                 try {
-                  await wallet.disconnect();
-                  setTimeout(() => wallet.connect(), 1000);
+                  console.log("Attempting to reconnect wallet");
+                  setError("Reconnecting wallet...");
+                  
+                  // First disconnect
+                  if (wallet.adapter && wallet.adapter.connected) {
+                    await wallet.disconnect();
+                  }
+                  
+                  // Wait a moment
+                  await new Promise(resolve => setTimeout(resolve, 1000));
+                  
+                  // Then reconnect
+                  await wallet.connect();
+                  
+                  setError("Wallet reconnected. Please try again.");
                 } catch (e) {
                   console.error("Error reconnecting wallet:", e);
+                  setError("Failed to reconnect wallet: " + e.message);
                 }
               }}
               className="mt-2 bg-red-500 text-white py-1 px-3 rounded-md hover:bg-red-600 text-sm"
@@ -72,6 +150,14 @@ export default function ProfileCreate() {
           )}
         </div>
       )}
+      
+      <div className={`mb-4 p-2 ${walletReady ? 'bg-green-100' : 'bg-yellow-100'} rounded`}>
+        <p>
+          {walletReady 
+            ? "✅ Wallet connected and ready" 
+            : "⚠️ Waiting for wallet to be ready..."}
+        </p>
+      </div>
       
       <form onSubmit={handleSubmit}>
         <div className="mb-4">
@@ -114,7 +200,7 @@ export default function ProfileCreate() {
         <button
           type="submit"
           className="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600"
-          disabled={isSubmitting}
+          disabled={isSubmitting || !walletReady}
         >
           {isSubmitting ? 'Creating...' : 'Create Profile'}
         </button>
