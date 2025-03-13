@@ -4,7 +4,6 @@ import { useAuth } from '../components/AuthProvider';
 import Feed from '../components/Feed';
 import { useRouter } from 'next/router';
 import { useState, useEffect } from 'react';
-import LoadingIndicator from '../components/LoadingIndicator';
 
 export default function Home() {
   const { connected } = useWallet();
@@ -22,7 +21,7 @@ export default function Home() {
     return (
       <div>
         <h1 className="text-3xl font-bold mb-8">Decentralized Social on Solana</h1>
-        <LoadingIndicator message="Initializing" />
+        <div>Loading...</div>
       </div>
     );
   }
@@ -49,8 +48,9 @@ export default function Home() {
           <p className="mb-4">Connect your wallet to get started</p>
         </div>
       ) : loading ? (
-        <div className="bg-white rounded-xl shadow-md p-6">
-          <LoadingIndicator message="Loading user profile" />
+        <div className="text-center py-8">
+          <p>Loading user profile...</p>
+          <p className="text-sm text-gray-500 mt-2">This may take a few moments...</p>
         </div>
       ) : !isAuthenticated ? (
         <div className="bg-white rounded-xl shadow-md p-6 text-center">

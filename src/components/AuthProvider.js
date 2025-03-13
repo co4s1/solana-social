@@ -1,5 +1,5 @@
 // src/components/AuthProvider.js
-import { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useRouter } from 'next/router';
 import { COLLECTION_ADDRESS, CONTENT_TYPES } from '../utils/constants';
@@ -19,16 +19,9 @@ export default function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [userProfile, setUserProfile] = useState(null);
   const [error, setError] = useState(null);
-  const [loadingStartTime, setLoadingStartTime] = useState(null);
   const router = useRouter();
   const { fetchProfileByWallet } = useProfile();
   const [mounted, setMounted] = useState(false);
-  
-  // Prevent flickering by enforcing a minimum loading time
-  const MIN_LOADING_TIME = 1500; // 1.5 seconds minimum loading time
-  
-  // Use debounce to prevent too many profile check attempts
-  const [checkProfileTimeout, setCheckProfileTimeout] = useState(null);
 
   // Handle client-side only rendering
   useEffect(() => {
@@ -36,67 +29,70 @@ export default function AuthProvider({ children }) {
     console.log("AuthProvider mounted");
   }, []);
 
-  // Reset profile when wallet disconnects
   useEffect(() => {
-    if (mounted && !connected && !connecting) {
+    // Only run on client-side
+    if (!mounted) {
+      console.log("AuthProvider waiting for mount");
+      return;
+    }
+    
+    // Skip if still connecting
+    if (connecting) {
+      console.log("Wallet is still connecting...");
+      return;
+    }
+
+    // Clear existing profile when wallet disconnects
+    if (!connected || !publicKey) {
+      console.log("Wallet disconnected or no public key");
+      setLoading(false);
       setUserProfile(null);
       setError(null);
-      setLoading(false);
+      return;
     }
-  }, [connected, connecting, mounted]);
+    
+    // Check if wallet adapter is initialized
+    if (!wallet || !wallet.adapter || !wallet.adapter.publicKey) {
+      console.log("Wallet adapter not fully initialized yet");
+      setLoading(true);
+      return;
+    }
 
-  // Function to check profile with debouncing
-  const checkProfileDebounced = useCallback(async () => {
-    // Cancel any existing timeout
-    if (checkProfileTimeout) {
-      clearTimeout(checkProfileTimeout);
-    }
-    
-    if (!publicKey) return;
-    
-    // Start a new timeout
-    const timeoutId = setTimeout(async () => {
-      if (!COLLECTION_ADDRESS) {
-        console.error("COLLECTION_ADDRESS is not configured");
-        setError("Collection address not configured");
-        setLoading(false);
-        return;
-      }
-      
-      // Record when loading started
-      if (!loadingStartTime) {
-        setLoadingStartTime(Date.now());
-      }
-      
+    const checkProfile = async () => {
       try {
         console.log("Checking profile for wallet:", publicKey.toString());
         setLoading(true);
         setError(null);
         
-        // Use a safety timeout for the profile fetch
-        const fetchTimeoutId = setTimeout(() => {
+        // Check if collection address is configured
+        if (!COLLECTION_ADDRESS) {
+          console.error("COLLECTION_ADDRESS is not configured");
+          setError("Collection address not configured");
+          setLoading(false);
+          return;
+        }
+        
+        // Use a safer approach with a separate timeout
+        let timeoutId = setTimeout(() => {
           console.log("Profile fetch timed out");
           setLoading(false);
           setError("Profile fetch timed out, but you can still use the app");
-        }, 20000); // 20 second timeout
+        }, 10000);
         
-        // Fetch profile
+        // Fetch profile (without the race)
         try {
           const profile = await fetchProfileByWallet(publicKey.toString());
-          clearTimeout(fetchTimeoutId);
+          
+          // Clear the timeout since we got a response
+          clearTimeout(timeoutId);
           
           console.log("Profile loaded:", profile);
           setUserProfile(profile);
-          
-          // Enforce minimum loading time to avoid flickering
-          const elapsedTime = Date.now() - loadingStartTime;
-          if (elapsedTime < MIN_LOADING_TIME) {
-            await new Promise(resolve => setTimeout(resolve, MIN_LOADING_TIME - elapsedTime));
-          }
-          
           setLoading(false);
         } catch (profileError) {
-          clearTimeout(fetchTimeoutId);
+          // Clear the timeout since we got a response (even if it's an error)
+          clearTimeout(timeoutId);
+          
           console.error("Error during profile fetch:", profileError);
           setError(profileError.message);
           setLoading(false);
@@ -107,30 +103,21 @@ export default function AuthProvider({ children }) {
         setUserProfile(null);
         setLoading(false);
       }
-    }, 300); // 300ms debounce
-    
-    setCheckProfileTimeout(timeoutId);
-  }, [fetchProfileByWallet, publicKey, loadingStartTime, checkProfileTimeout]);
+    };
 
-  // Check profile when wallet is connected
-  useEffect(() => {
-    if (!mounted) return;
+    // Check profile immediately (instead of using a delay)
+    checkProfile();
     
-    if (connecting) {
-      setLoading(true);
-      return;
-    }
-    
-    if (connected && publicKey) {
-      checkProfileDebounced();
-    }
-  }, [connected, publicKey, mounted, connecting, checkProfileDebounced]);
+    // Return cleanup function to cancel any pending operations
+    return () => {
+      console.log("AuthProvider cleanup");
+    };
+  }, [connected, publicKey, fetchProfileByWallet, mounted, connecting, wallet]);
 
-  // Value object for context
   const value = {
     isAuthenticated: connected && !!userProfile,
     userProfile,
-    loading: !mounted || loading,
+    loading: !mounted || loading || connecting,
     error,
   };
 

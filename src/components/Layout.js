@@ -5,7 +5,6 @@ import { useAuth } from './AuthProvider';
 import { useRouter } from 'next/router';
 import dynamic from 'next/dynamic';
 import { useState, useEffect } from 'react';
-import DebugInfo from './DebugInfo';
 
 // Dynamically import the client wallet button with SSR disabled
 const ClientWalletMultiButton = dynamic(
@@ -79,8 +78,7 @@ export default function Layout({ children }) {
         {children}
       </main>
       
-      {/* Include debug component */}
-      <DebugInfo />
+
     </div>
   );
 }
