@@ -1,20 +1,20 @@
-// src/hooks/useProfile.js - with better wallet handling
+// src/hooks/useProfile.js - with safer wallet initialization
 
 import { useCallback, useState } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getUmi, fetchCollectionNFTs, createSocialNFT } from '../utils/umi';
 import { COLLECTION_ADDRESS, CONTENT_TYPES } from '../utils/constants';
-import { usePinata } from './usePinata';
-import { useWalletWrapper } from '../components/WalletWrapper';
+import { usePinata } from '../hooks/usePinata';
 
 // Local cache for profile data to improve performance
 const profileCache = new Map();
 
 export const useProfile = () => {
   const { publicKey: walletPublicKey, wallet, connected } = useWallet();
-  const { ensureWalletConnected } = useWalletWrapper();
-  const umi = walletPublicKey ? getUmi(wallet) : null;
+  
+  // Important: Use lazy initialization of umi - don't call getUmi() directly here
+  // Instead, we'll access it only when needed within functions
   const queryClient = useQueryClient();
   const { uploadImage } = usePinata();
   const [lastError, setLastError] = useState(null);
@@ -35,8 +35,9 @@ export const useProfile = () => {
         return profileCache.get(walletAddress);
       }
       
-      if (!umi) {
-        console.error("No UMI instance available for fetchProfileByWallet");
+      // Safe check for wallet readiness
+      if (!connected || !wallet) {
+        console.log("Wallet not connected or ready, skipping profile fetch");
         return null;
       }
       
@@ -52,6 +53,13 @@ export const useProfile = () => {
 
       try {
         console.log(`Fetching profiles from collection ${COLLECTION_ADDRESS}`);
+        
+        // Get umi with the forceCreate flag to prevent initialization errors
+        const umi = getUmi(wallet, true);
+        if (!umi) {
+          console.log("Could not create UMI instance, skipping profile fetch");
+          return null;
+        }
         
         // Set up timeout with a flag instead of Promise.race
         timeoutId = setTimeout(() => {
@@ -122,7 +130,7 @@ export const useProfile = () => {
         return null;
       }
     },
-    [umi]
+    [connected, wallet]
   );
 
   // Optimized query with better error handling
@@ -160,11 +168,8 @@ export const useProfile = () => {
         throw new Error('Wallet not connected');
       }
 
-      // Try to ensure wallet is connected first
-      await ensureWalletConnected();
-      
-      // Get fresh UMI instance to ensure it has latest wallet state
-      const freshUmi = getUmi(wallet);
+      // Get fresh UMI instance with forceCreate flag
+      const freshUmi = getUmi(wallet, true);
       if (!freshUmi) {
         throw new Error('Failed to initialize UMI with wallet');
       }
@@ -268,6 +273,8 @@ export const useProfile = () => {
 
   const fetchProfileByAddress = useCallback(
     async (profileAddress) => {
+      // Get umi safely with forceCreate
+      const umi = getUmi(wallet, true);
       if (!umi) return null;
 
       try {
@@ -280,7 +287,7 @@ export const useProfile = () => {
         return null;
       }
     },
-    [umi]
+    [wallet]
   );
 
   // Manually clear profile cache

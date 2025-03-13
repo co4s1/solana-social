@@ -1,250 +1,195 @@
-// src/pages/create-profile.js - simplified version for direct NFT creation
-
+// src/pages/create-profile.js - Real implementation that actually mints NFTs
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import { useWallet } from '@solana/wallet-adapter-react';
 import ImageUpload from '../components/ImageUpload';
 import { MAX_CHAR_COUNT } from '../utils/constants';
-import { getUmi, createSocialNFT } from '../utils/umi';
-import { COLLECTION_ADDRESS, CONTENT_TYPES } from '../utils/constants';
+import { COLLECTION_ADDRESS } from '../utils/constants';
 import { usePinata } from '../hooks/usePinata';
+import { getUmi, createSocialNFT } from '../utils/umi';
+import { CONTENT_TYPES } from '../utils/constants';
 
-export default function ProfileCreate() {
+export default function CreateProfile() {
   const [username, setUsername] = useState('');
   const [bio, setBio] = useState('');
   const [imageFile, setImageFile] = useState(null);
   const [error, setError] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [transactionStatus, setTransactionStatus] = useState({ 
-    status: 'idle',
-    message: '',
-    error: null,
-    txId: null
-  });
+  const [status, setStatus] = useState('idle');
+  const [statusMessage, setStatusMessage] = useState('');
+  const [transactionId, setTransactionId] = useState('');
+  const [debugInfo, setDebugInfo] = useState(null);
   
   const router = useRouter();
-  const { connected, publicKey, wallet, connect, disconnect } = useWallet();
+  const wallet = useWallet();
   const { uploadImage } = usePinata();
+  
+  // Check if we're in browser environment
   const [mounted, setMounted] = useState(false);
-
-  // Handle client-side only rendering
+  useEffect(() => setMounted(true), []);
+  
+  // Log wallet state for debugging
   useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  const reconnectWallet = async () => {
-    try {
-      setError("Reconnecting wallet...");
-      
-      // Disconnect first
-      await disconnect();
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Then reconnect
-      await connect();
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      setError("Wallet reconnected. Please try again.");
-    } catch (e) {
-      console.error("Error reconnecting wallet:", e);
-      setError("Failed to reconnect wallet: " + e.message);
-    }
+    if (!mounted) return;
+    
+    const walletInfo = {
+      connected: wallet.connected,
+      hasPublicKey: Boolean(wallet.publicKey),
+      publicKeyString: wallet.publicKey?.toString(),
+      hasAdapter: Boolean(wallet.adapter),
+      connecting: wallet.connecting,
+      hasSignTransaction: typeof wallet.signTransaction === 'function',
+      hasSignAllTransactions: typeof wallet.signAllTransactions === 'function',
+      hasSignMessage: typeof wallet.signMessage === 'function'
+    };
+    
+    console.log("Wallet state:", walletInfo);
+    setDebugInfo(walletInfo);
+  }, [wallet, mounted]);
+  
+  // Verify wallet is properly connected
+  const isWalletReady = wallet.connected && wallet.publicKey && !wallet.connecting;
+  
+  const updateStatus = (newStatus, message = '') => {
+    setStatus(newStatus);
+    setStatusMessage(message);
   };
-
+  
+  // Form submission handler - REAL IMPLEMENTATION
   const handleSubmit = async (e) => {
     e.preventDefault();
     
+    // Validate form inputs
     if (!username) {
       setError('Username is required');
       return;
     }
     
-    if (!connected || !publicKey) {
-      setError("Please connect your wallet first");
+    if (!wallet.connected || !wallet.publicKey) {
+      setError('Please connect your wallet first');
       return;
     }
     
-    if (!wallet || !wallet.adapter) {
-      setError("Wallet adapter not available. Please refresh the page and try again.");
+    // Check that wallet has required sign methods
+    if (typeof wallet.signTransaction !== 'function' || 
+        typeof wallet.signAllTransactions !== 'function') {
+      setError('Your wallet does not support the required transaction signing methods. Please use a compatible wallet.');
       return;
     }
-
+    
+    // Start submission process
     try {
       setError(null);
       setIsSubmitting(true);
       
-      // Get UMI instance
-      const umi = getUmi(wallet);
-      if (!umi) {
-        throw new Error("Failed to initialize UMI. Please try again.");
-      }
-      
-      // Start with image upload
-      setTransactionStatus({
-        status: 'uploading',
-        message: 'Uploading profile image...',
-        error: null,
-        txId: null
-      });
-      
+      // Step 1: Upload image if provided
+      updateStatus('uploading', 'Uploading profile image...');
       let imageUrl = '';
+      
       if (imageFile) {
         try {
           imageUrl = await uploadImage(imageFile);
-          console.log("Image uploaded to:", imageUrl);
-        } catch (error) {
-          console.error("Image upload error:", error);
-          setError("Failed to upload image, but continuing with profile creation");
-          // Continue without image
+          console.log(`Image uploaded: ${imageUrl}`);
+        } catch (imageError) {
+          console.error('Image upload failed:', imageError);
+          setError('Image upload failed, but continuing with profile creation');
         }
       }
       
-      // Update status to creating
-      setTransactionStatus({
-        status: 'creating',
-        message: 'Creating your profile NFT. Please approve the transaction in your wallet...',
-        error: null,
-        txId: null
-      });
+      // Step 2: Try to create UMI instance
+      updateStatus('initializing', 'Initializing blockchain connection...');
       
-      // Create profile NFT
-      console.log("Creating profile NFT with:", {
-        type: CONTENT_TYPES.PROFILE,
-        name: `Profile #${username}`,
-        description: bio || '',
-        image: imageUrl,
-        username
-      });
+      // Pass the entire wallet object
+      const umi = getUmi(wallet);
+      console.log("UMI instance created:", Boolean(umi));
       
-      const nft = await createSocialNFT(umi, COLLECTION_ADDRESS, {
-        type: CONTENT_TYPES.PROFILE,
-        name: `Profile #${username}`,
-        description: bio || '',
-        image: imageUrl,
-        attributes: [
-          { trait_type: 'username', value: username }
-        ]
-      });
-      
-      // Success!
-      setTransactionStatus({
-        status: 'success',
-        message: 'Profile created successfully!',
-        error: null,
-        txId: nft.address
-      });
-      
-      // Clear form
-      setUsername('');
-      setBio('');
-      setImageFile(null);
-      
-      // Wait a moment before redirecting
-      setTimeout(() => {
-        router.push('/');
-      }, 3000);
-      
-    } catch (error) {
-      console.error('Error creating profile:', error);
-      
-      // Handle specific error types
-      if (error.message?.includes('wallet')) {
-        setError(`Wallet error: ${error.message}`);
-      } else if (error.message?.includes('SOL')) {
-        setError('Not enough SOL in your wallet. Please fund your wallet and try again.');
-      } else if (error.message?.includes('rejected')) {
-        setError('Transaction was rejected. Please approve the transaction when prompted.');
-      } else {
-        setError(error.message || 'Failed to create profile. Please try again.');
+      if (!umi) {
+        throw new Error('Failed to create blockchain connection. Please check that your wallet is properly connected.');
       }
       
-      setTransactionStatus({
-        status: 'error',
-        message: 'Failed to create profile',
-        error: error.message,
-        txId: null
-      });
+      // Step 3: Create NFT profile - ACTUAL MINTING
+      updateStatus('creating', 'Creating your profile NFT. Please approve the transaction in your wallet...');
+      
+      // Attempt to mint the actual NFT
+      const nft = await createSocialNFT(
+        umi,
+        COLLECTION_ADDRESS,
+        {
+          type: CONTENT_TYPES.PROFILE,
+          name: `Profile: ${username}`,
+          description: bio || '',
+          image: imageUrl,
+          attributes: [
+            { trait_type: 'username', value: username }
+          ]
+        }
+      );
+      
+      // Only show success if we got a real result with address
+      if (nft && nft.address) {
+        // Success!
+        updateStatus('success', 'Profile NFT created successfully!');
+        setTransactionId(nft.address);
+        console.log('Created profile NFT with address:', nft.address);
+        
+        // Clear form
+        setUsername('');
+        setBio('');
+        setImageFile(null);
+        
+        // Redirect after short delay
+        setTimeout(() => {
+          router.push('/');
+        }, 5000);
+      } else {
+        throw new Error("NFT creation failed - no transaction ID returned");
+      }
+    } catch (error) {
+      console.error('Profile creation failed:', error);
+      updateStatus('error', `Failed to create profile: ${error.message}`);
+      setError(error.message);
     } finally {
       setIsSubmitting(false);
     }
   };
-
-  const renderTransactionStatus = () => {
-    switch (transactionStatus.status) {
-      case 'uploading':
-        return (
-          <div className="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 mb-4">
-            <p className="font-bold">Uploading Image</p>
-            <p>{transactionStatus.message}</p>
-            <div className="w-full bg-gray-200 rounded-full h-2.5 mt-2">
-              <div className="bg-blue-600 h-2.5 rounded-full w-1/3"></div>
-            </div>
-          </div>
-        );
-      case 'creating':
-        return (
-          <div className="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 mb-4">
-            <p className="font-bold">Creating Profile NFT</p>
-            <p>{transactionStatus.message}</p>
-            <div className="w-full bg-gray-200 rounded-full h-2.5 mt-2">
-              <div className="bg-blue-600 h-2.5 rounded-full w-2/3"></div>
-            </div>
-          </div>
-        );
-      case 'success':
-        return (
-          <div className="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 mb-4">
-            <p className="font-bold">Success!</p>
-            <p>{transactionStatus.message}</p>
-            {transactionStatus.txId && (
-              <p className="text-sm mt-2">NFT Address: {transactionStatus.txId}</p>
-            )}
-            <p className="text-sm mt-2">Redirecting to home page...</p>
-          </div>
-        );
-      case 'error':
-        return (
-          <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-4">
-            <p className="font-bold">Error</p>
-            <p>{transactionStatus.message}</p>
-            {transactionStatus.error && <p className="text-sm mt-1">{transactionStatus.error}</p>}
-          </div>
-        );
-      default:
-        return null;
-    }
-  };
-
+  
+  // Render loading state during SSR
   if (!mounted) {
-    return (
-      <div className="max-w-md mx-auto bg-white rounded-xl shadow-md p-6">
-        <h2 className="text-2xl font-bold mb-4">Create Your Profile</h2>
-        <div className="flex justify-center items-center p-6">
-          <p>Loading wallet...</p>
-        </div>
-      </div>
-    );
+    return <div>Loading...</div>;
   }
-
+  
   return (
     <div className="max-w-md mx-auto bg-white rounded-xl shadow-md p-6">
       <h2 className="text-2xl font-bold mb-4">Create Your Profile</h2>
       
-      {!connected && (
+      {/* Wallet connection status */}
+      {!wallet.connected && (
         <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 mb-4">
           <p className="font-bold">Wallet Not Connected</p>
           <p>Please connect your wallet using the button in the top-right corner.</p>
         </div>
       )}
       
+      {/* Error message */}
       {error && (
         <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-4">
           <p className="font-bold">Error</p>
           <p>{error}</p>
           {error.includes('wallet') && (
-            <button 
-              onClick={reconnectWallet}
-              className="mt-2 bg-red-500 text-white py-1 px-3 rounded-md hover:bg-red-600 text-sm"
+            <button
+              onClick={async () => {
+                try {
+                  if (wallet.connected) {
+                    await wallet.disconnect();
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                  }
+                  await wallet.connect();
+                  setError(null);
+                } catch (e) {
+                  setError(`Reconnection failed: ${e.message}`);
+                }
+              }}
+              className="mt-2 bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded text-sm"
             >
               Reconnect Wallet
             </button>
@@ -252,14 +197,58 @@ export default function ProfileCreate() {
         </div>
       )}
       
-      {renderTransactionStatus()}
+      {/* Status messages */}
+      {status === 'initializing' && (
+        <div className="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 mb-4">
+          <p className="font-bold">Initializing</p>
+          <p>{statusMessage}</p>
+        </div>
+      )}
       
+      {status === 'uploading' && (
+        <div className="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 mb-4">
+          <p className="font-bold">Uploading Image</p>
+          <p>{statusMessage}</p>
+        </div>
+      )}
+      
+      {status === 'creating' && (
+        <div className="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 mb-4">
+          <p className="font-bold">Creating Profile NFT</p>
+          <p>{statusMessage}</p>
+        </div>
+      )}
+      
+      {status === 'success' && (
+        <div className="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 mb-4">
+          <p className="font-bold">Success!</p>
+          <p>{statusMessage}</p>
+          {transactionId && (
+            <p className="text-sm mt-2">
+              NFT address: <span className="font-mono">{transactionId}</span>
+            </p>
+          )}
+          <p className="text-sm mt-2">Redirecting to home page in a few seconds...</p>
+        </div>
+      )}
+      
+      {/* Debug information */}
+      {debugInfo && (
+        <div className="mb-4 p-2 bg-gray-100 rounded text-xs">
+          <p className="font-bold mb-1">Wallet Debug Info:</p>
+          <pre className="overflow-auto max-h-32">
+            {JSON.stringify(debugInfo, null, 2)}
+          </pre>
+        </div>
+      )}
+      
+      {/* Profile creation form */}
       <form onSubmit={handleSubmit}>
         <div className="mb-4">
           <label className="block text-gray-700 mb-2">Profile Picture</label>
           <ImageUpload 
             onImageSelected={setImageFile} 
-            disabled={!connected || isSubmitting || transactionStatus.status !== 'idle'}
+            disabled={!isWalletReady || isSubmitting}
           />
         </div>
         
@@ -275,7 +264,7 @@ export default function ProfileCreate() {
             className="w-full px-3 py-2 border rounded-md"
             required
             maxLength={50}
-            disabled={!connected || isSubmitting || transactionStatus.status !== 'idle'}
+            disabled={!isWalletReady || isSubmitting}
           />
         </div>
         
@@ -290,7 +279,7 @@ export default function ProfileCreate() {
             className="w-full px-3 py-2 border rounded-md"
             rows={3}
             maxLength={MAX_CHAR_COUNT}
-            disabled={!connected || isSubmitting || transactionStatus.status !== 'idle'}
+            disabled={!isWalletReady || isSubmitting}
           />
           <p className="text-gray-500 text-sm mt-1">
             {bio.length}/{MAX_CHAR_COUNT}
@@ -300,21 +289,15 @@ export default function ProfileCreate() {
         <button
           type="submit"
           className="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
-          disabled={
-            !connected || 
-            isSubmitting || 
-            !username ||
-            transactionStatus.status !== 'idle'
-          }
+          disabled={!isWalletReady || isSubmitting || !username}
         >
           {isSubmitting ? 'Creating NFT...' : 'Create Profile NFT'}
         </button>
         
-        {connected && (
-          <p className="text-xs text-gray-500 mt-2 text-center">
-            This will create an NFT on Solana. Please make sure you have enough SOL for the transaction.
-          </p>
-        )}
+        <p className="text-xs text-gray-500 mt-2 text-center">
+          This will create an actual NFT on Solana.
+          Make sure you have enough SOL for transaction fees.
+        </p>
       </form>
     </div>
   );
