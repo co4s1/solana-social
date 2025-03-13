@@ -1,4 +1,4 @@
-// src/components/AuthProvider.js
+// src/components/AuthProvider.js - updated with better wallet initialization
 import { createContext, useContext, useEffect, useState } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useRouter } from 'next/router';
@@ -21,12 +21,50 @@ export default function AuthProvider({ children }) {
   const [error, setError] = useState(null);
   const { fetchProfileByWallet } = useProfile();
   const [mounted, setMounted] = useState(false);
+  const [walletInitialized, setWalletInitialized] = useState(false);
 
   // Handle client-side only rendering
   useEffect(() => {
     setMounted(true);
     console.log("AuthProvider mounted");
   }, []);
+
+  // Check if wallet is properly initialized
+  useEffect(() => {
+    if (!mounted) return;
+    
+    const checkWalletInitialized = () => {
+      // Check that wallet is connected and adapter is available
+      if (connected && 
+          publicKey && 
+          wallet && 
+          wallet.adapter && 
+          wallet.adapter.publicKey && 
+          !connecting) {
+        console.log("Wallet is properly initialized");
+        setWalletInitialized(true);
+        return true;
+      }
+      
+      console.log("Wallet not fully initialized yet");
+      setWalletInitialized(false);
+      return false;
+    };
+    
+    // Initial check
+    const isInitialized = checkWalletInitialized();
+    
+    // If not initialized and wallet is connected, poll for initialization
+    if (!isInitialized && connected) {
+      const intervalId = setInterval(() => {
+        if (checkWalletInitialized()) {
+          clearInterval(intervalId);
+        }
+      }, 500);
+      
+      return () => clearInterval(intervalId);
+    }
+  }, [connected, publicKey, wallet, connecting, mounted]);
 
   useEffect(() => {
     // Only run on client-side
@@ -50,13 +88,6 @@ export default function AuthProvider({ children }) {
       return;
     }
     
-    // Check if wallet adapter is initialized
-    if (!wallet || !wallet.adapter) {
-      console.log("Wallet adapter not fully initialized yet");
-      setLoading(true);
-      return;
-    }
-
     // IMPORTANT: Immediately set loading to false to prevent getting stuck
     // This will show the "Create Profile" button immediately
     setLoading(false);
@@ -88,7 +119,7 @@ export default function AuthProvider({ children }) {
     return () => {
       console.log("AuthProvider cleanup");
     };
-  }, [connected, publicKey, fetchProfileByWallet, mounted, connecting, wallet]);
+  }, [connected, publicKey, fetchProfileByWallet, mounted, connecting, walletInitialized]);
 
   const value = {
     isAuthenticated: connected && !!userProfile,

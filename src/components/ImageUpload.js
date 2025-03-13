@@ -1,8 +1,9 @@
-// src/components/ImageUpload.js
+// src/components/ImageUpload.js - updated with disabled state
+
 import { useState, useRef } from 'react';
 import Image from 'next/image';
 
-export default function ImageUpload({ onImageSelected }) {
+export default function ImageUpload({ onImageSelected, disabled = false }) {
   const [previewUrl, setPreviewUrl] = useState(null);
   const fileInputRef = useRef(null);
 
@@ -53,7 +54,12 @@ export default function ImageUpload({ onImageSelected }) {
       <button
         type="button"
         onClick={() => fileInputRef.current.click()}
-        className="bg-gray-200 hover:bg-gray-300 text-gray-800 py-2 px-4 rounded-md"
+        className={`bg-gray-200 text-gray-800 py-2 px-4 rounded-md ${
+          disabled 
+            ? 'opacity-50 cursor-not-allowed' 
+            : 'hover:bg-gray-300 cursor-pointer'
+        }`}
+        disabled={disabled}
       >
         {previewUrl ? 'Change Image' : 'Upload Image'}
       </button>
@@ -64,6 +70,7 @@ export default function ImageUpload({ onImageSelected }) {
         onChange={handleFileChange}
         className="hidden"
         accept="image/*"
+        disabled={disabled}
       />
     </div>
   );

@@ -1,5 +1,6 @@
-// src/hooks/usePosts.js
-import { useCallback } from 'react';
+// src/hooks/usePosts.js - updated with transaction status
+
+import { useCallback, useState } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { publicKey } from '@metaplex-foundation/umi';
@@ -8,10 +9,16 @@ import { COLLECTION_ADDRESS, CONTENT_TYPES } from '../utils/constants';
 import { usePinata } from './usePinata';
 
 export const usePosts = () => {
-  const { publicKey: walletPublicKey, wallet } = useWallet();
+  const { publicKey: walletPublicKey, wallet, connected } = useWallet();
   const umi = walletPublicKey ? getUmi(wallet) : null;
   const queryClient = useQueryClient();
   const { uploadImage } = usePinata();
+  const [transactionStatus, setTransactionStatus] = useState({
+    status: 'idle', // 'idle', 'uploading', 'creating', 'confirming', 'success', 'error'
+    message: '',
+    error: null,
+    txId: null,
+  });
 
   // Fetch all posts with error handling
   const fetchPosts = useCallback(async () => {
@@ -57,7 +64,7 @@ export const usePosts = () => {
             content: nft.json?.description || '',
             image: nft.json?.image || '',
             author: authorAttr?.value || '',
-            timestamp: timestampAttr?.value ? new Date(timestampAttr.value * 1000) : new Date(),
+            timestamp: timestampAttr?.value ? new Date(parseInt(timestampAttr.value) * 1000) : new Date(),
           };
         }).sort((a, b) => b.timestamp - a.timestamp); // Sort by newest first
       } catch (fetchError) {
@@ -118,7 +125,7 @@ export const usePosts = () => {
               content: nft.json?.description || '',
               image: nft.json?.image || '',
               author: userAddress,
-              timestamp: timestampAttr?.value ? new Date(timestampAttr.value * 1000) : new Date(),
+              timestamp: timestampAttr?.value ? new Date(parseInt(timestampAttr.value) * 1000) : new Date(),
             };
           })
           .sort((a, b) => b.timestamp - a.timestamp); // Sort by newest first
@@ -167,7 +174,7 @@ export const usePosts = () => {
         content: post.json?.description || '',
         image: post.json?.image || '',
         author: authorAttr?.value || '',
-        timestamp: timestampAttr?.value ? new Date(timestampAttr.value * 1000) : new Date(),
+        timestamp: timestampAttr?.value ? new Date(parseInt(timestampAttr.value) * 1000) : new Date(),
       };
     } catch (error) {
       console.error('Error fetching post:', error);
@@ -182,20 +189,71 @@ export const usePosts = () => {
         throw new Error('Wallet not connected or collection not configured');
       }
 
+      // Reset transaction status
+      setTransactionStatus({
+        status: 'uploading',
+        message: 'Uploading post image...',
+        error: null,
+        txId: null,
+      });
+
       let imageUrl = '';
       
       // Upload image to Pinata if provided
       if (imageFile) {
-        imageUrl = await uploadImage(imageFile);
+        try {
+          imageUrl = await uploadImage(imageFile);
+          console.log("Post image uploaded to:", imageUrl);
+        } catch (imageError) {
+          console.error("Image upload failed:", imageError);
+          setTransactionStatus({
+            status: 'error',
+            message: 'Failed to upload image',
+            error: imageError.message,
+            txId: null,
+          });
+          // Continue without image rather than failing completely
+        }
       }
 
-      return createSocialNFT(umi, COLLECTION_ADDRESS, {
-        type: CONTENT_TYPES.POST,
-        name: `Post #${Math.floor(Math.random() * 1000000)}`,
-        description: content,
-        image: imageUrl,
-        attributes: [],
+      // Update status
+      setTransactionStatus({
+        status: 'creating',
+        message: 'Creating your post NFT...',
+        error: null,
+        txId: null,
       });
+
+      try {
+        const nft = await createSocialNFT(umi, COLLECTION_ADDRESS, {
+          type: CONTENT_TYPES.POST,
+          name: `Post #${Math.floor(Math.random() * 1000000)}`,
+          description: content,
+          image: imageUrl,
+          attributes: [], // Author and timestamp are added in createSocialNFT
+        });
+
+        // Update status to success
+        setTransactionStatus({
+          status: 'success',
+          message: 'Post created successfully!',
+          error: null,
+          txId: nft.address,
+        });
+
+        return nft;
+      } catch (error) {
+        console.error("Post creation failed:", error);
+        
+        setTransactionStatus({
+          status: 'error',
+          message: 'Failed to create post',
+          error: error.message,
+          txId: null,
+        });
+        
+        throw error;
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: 'posts' });
@@ -210,6 +268,14 @@ export const usePosts = () => {
         throw new Error('Wallet not connected or collection not configured');
       }
 
+      // Reset transaction status
+      setTransactionStatus({
+        status: 'creating',
+        message: 'Creating your reply...',
+        error: null,
+        txId: null,
+      });
+
       const attributes = [
         {
           trait_type: 'parent_post',
@@ -217,13 +283,36 @@ export const usePosts = () => {
         },
       ];
 
-      return createSocialNFT(umi, COLLECTION_ADDRESS, {
-        type: CONTENT_TYPES.REPLY,
-        name: `Reply #${Math.floor(Math.random() * 1000000)}`,
-        description: content,
-        image: '',
-        attributes,
-      });
+      try {
+        const nft = await createSocialNFT(umi, COLLECTION_ADDRESS, {
+          type: CONTENT_TYPES.REPLY,
+          name: `Reply #${Math.floor(Math.random() * 1000000)}`,
+          description: content,
+          image: '',
+          attributes,
+        });
+
+        // Update status to success
+        setTransactionStatus({
+          status: 'success',
+          message: 'Reply created successfully!',
+          error: null,
+          txId: nft.address,
+        });
+
+        return nft;
+      } catch (error) {
+        console.error("Reply creation failed:", error);
+        
+        setTransactionStatus({
+          status: 'error',
+          message: 'Failed to create reply',
+          error: error.message,
+          txId: null,
+        });
+        
+        throw error;
+      }
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['replies', variables.parentPost] });
@@ -274,7 +363,7 @@ export const usePosts = () => {
               address: nft.address.toString(),
               content: nft.json?.description || '',
               author: authorAttr?.value || '',
-              timestamp: timestampAttr?.value ? new Date(timestampAttr.value * 1000) : new Date(),
+              timestamp: timestampAttr?.value ? new Date(parseInt(timestampAttr.value) * 1000) : new Date(),
               parentPost: postAddress,
             };
           })
@@ -294,10 +383,14 @@ export const usePosts = () => {
   }, [umi]);
 
   // Use react-query to fetch and cache posts
-  const { data: posts, isLoading: isLoadingPosts } = useQuery({
+  const { 
+    data: posts, 
+    isLoading: isLoadingPosts,
+    refetch: refetchPosts 
+  } = useQuery({
     queryKey: 'posts',
     queryFn: fetchPosts,
-    enabled: !!umi && !!COLLECTION_ADDRESS,
+    enabled: !!umi && !!COLLECTION_ADDRESS && connected,
     staleTime: 1000 * 60 * 1, // 1 minute
     retry: 1,
     retryDelay: 1000,
@@ -314,5 +407,7 @@ export const usePosts = () => {
     fetchPost,
     createReply,
     fetchReplies,
+    transactionStatus,
+    refetchPosts
   };
 };

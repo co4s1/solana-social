@@ -1,21 +1,29 @@
-// src/hooks/useProfile.js
+// src/hooks/useProfile.js - with better wallet handling
+
 import { useCallback, useState } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getUmi, fetchCollectionNFTs, createSocialNFT } from '../utils/umi';
 import { COLLECTION_ADDRESS, CONTENT_TYPES } from '../utils/constants';
 import { usePinata } from './usePinata';
-import { publicKey } from '@metaplex-foundation/umi';
+import { useWalletWrapper } from '../components/WalletWrapper';
 
 // Local cache for profile data to improve performance
 const profileCache = new Map();
 
 export const useProfile = () => {
-  const { publicKey: walletPublicKey, wallet } = useWallet();
+  const { publicKey: walletPublicKey, wallet, connected } = useWallet();
+  const { ensureWalletConnected } = useWalletWrapper();
   const umi = walletPublicKey ? getUmi(wallet) : null;
   const queryClient = useQueryClient();
   const { uploadImage } = usePinata();
   const [lastError, setLastError] = useState(null);
+  const [transactionStatus, setTransactionStatus] = useState({
+    status: 'idle', // 'idle', 'uploading', 'creating', 'confirming', 'success', 'error'
+    message: '',
+    error: null,
+    txId: null,
+  });
 
   const fetchProfileByWallet = useCallback(
     async (walletAddress) => {
@@ -121,13 +129,19 @@ export const useProfile = () => {
   const { 
     data: profile, 
     isLoading: isLoadingProfile,
-    error: profileError 
+    error: profileError,
+    refetch: refetchProfile
   } = useQuery({
     queryKey: ['profile', walletPublicKey?.toString()],
-    queryFn: () => fetchProfileByWallet(walletPublicKey.toString()),
-    enabled: !!walletPublicKey && !!umi && !!COLLECTION_ADDRESS,
+    queryFn: () => {
+      if (!walletPublicKey) {
+        console.log("No wallet public key available for profile query");
+        return null;
+      }
+      return fetchProfileByWallet(walletPublicKey.toString());
+    },
+    enabled: !!walletPublicKey && !!connected,
     staleTime: 1000 * 60 * 5, // 5 minutes
-    // Add error handling and retry logic
     retry: 2,
     retryDelay: 1000,
     onError: (error) => {
@@ -138,9 +152,30 @@ export const useProfile = () => {
 
   const createProfile = useMutation({
     mutationFn: async ({ username, bio, imageFile }) => {
-      if (!umi || !COLLECTION_ADDRESS || !walletPublicKey) {
-        throw new Error('Wallet not connected or collection not configured');
+      if (!COLLECTION_ADDRESS) {
+        throw new Error('Collection address not configured');
       }
+      
+      if (!connected || !walletPublicKey) {
+        throw new Error('Wallet not connected');
+      }
+
+      // Try to ensure wallet is connected first
+      await ensureWalletConnected();
+      
+      // Get fresh UMI instance to ensure it has latest wallet state
+      const freshUmi = getUmi(wallet);
+      if (!freshUmi) {
+        throw new Error('Failed to initialize UMI with wallet');
+      }
+
+      // Reset transaction status
+      setTransactionStatus({
+        status: 'uploading',
+        message: 'Uploading profile image...',
+        error: null,
+        txId: null,
+      });
 
       let imageUrl = ''; // Default empty URL
       
@@ -148,11 +183,26 @@ export const useProfile = () => {
       if (imageFile) {
         try {
           imageUrl = await uploadImage(imageFile);
+          console.log("Image uploaded to:", imageUrl);
         } catch (imageError) {
           console.error("Image upload failed:", imageError);
+          setTransactionStatus({
+            status: 'error',
+            message: 'Failed to upload image',
+            error: imageError.message,
+            txId: null,
+          });
           // Continue without image rather than failing completely
         }
       }
+
+      // Update status
+      setTransactionStatus({
+        status: 'creating',
+        message: 'Creating your profile NFT...',
+        error: null,
+        txId: null,
+      });
 
       const attributes = [
         {
@@ -161,29 +211,50 @@ export const useProfile = () => {
         },
       ];
 
-      // Create the profile NFT
-      const nft = await createSocialNFT(umi, COLLECTION_ADDRESS, {
-        type: CONTENT_TYPES.PROFILE,
-        name: `Profile #${username}`,
-        description: bio || '',
-        image: imageUrl,
-        attributes,
-      });
-      
-      // Create profile data to add to cache immediately
-      const profileData = {
-        address: nft.address.toString(),
-        name: `Profile #${username}`,
-        description: bio || '',
-        image: imageUrl,
-        username: username,
-        authorAddress: walletPublicKey.toString(),
-      };
-      
-      // Update cache immediately for better UX
-      profileCache.set(walletPublicKey.toString(), profileData);
-      
-      return nft;
+      try {
+        // Create the profile NFT
+        const nft = await createSocialNFT(freshUmi, COLLECTION_ADDRESS, {
+          type: CONTENT_TYPES.PROFILE,
+          name: `Profile #${username}`,
+          description: bio || '',
+          image: imageUrl,
+          attributes,
+        });
+        
+        // Update status to success
+        setTransactionStatus({
+          status: 'success',
+          message: 'Profile created successfully!',
+          error: null,
+          txId: nft.address, // Use the NFT address as the transaction ID
+        });
+        
+        // Create profile data to add to cache immediately
+        const profileData = {
+          address: nft.address,
+          name: `Profile #${username}`,
+          description: bio || '',
+          image: imageUrl,
+          username: username,
+          authorAddress: walletPublicKey.toString(),
+        };
+        
+        // Update cache immediately for better UX
+        profileCache.set(walletPublicKey.toString(), profileData);
+        
+        return nft;
+      } catch (error) {
+        console.error("Profile creation failed:", error);
+        
+        setTransactionStatus({
+          status: 'error',
+          message: 'Failed to create profile',
+          error: error.message,
+          txId: null,
+        });
+        
+        throw error;
+      }
     },
     onSuccess: () => {
       // Invalidate queries
@@ -225,6 +296,8 @@ export const useProfile = () => {
     createProfile,
     fetchProfileByWallet,
     fetchProfileByAddress,
-    clearProfileCache
+    clearProfileCache,
+    transactionStatus,
+    refetchProfile
   };
 };

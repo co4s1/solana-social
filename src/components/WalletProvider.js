@@ -1,4 +1,4 @@
-// src/components/WalletProvider.js
+// src/components/WalletProvider.js - improved initialization
 import { useMemo, useState, useEffect } from 'react';
 import { WalletAdapterNetwork } from '@solana/wallet-adapter-base';
 import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react';
@@ -30,7 +30,6 @@ export default function WalletConnectionProvider({ children }) {
     () => [
       new PhantomWalletAdapter(),
       new SolflareWalletAdapter(),
-      // BackpackWalletAdapter is not available in your version - removed
     ],
     [network]
   );
@@ -42,7 +41,13 @@ export default function WalletConnectionProvider({ children }) {
 
   return (
     <ConnectionProvider endpoint={endpoint}>
-      <WalletProvider wallets={wallets} autoConnect>
+      <WalletProvider 
+        wallets={wallets} 
+        autoConnect={true} 
+        onError={(error) => {
+          console.error('Wallet error:', error);
+        }}
+      >
         <WalletModalProvider>{children}</WalletModalProvider>
       </WalletProvider>
     </ConnectionProvider>
