@@ -1,27 +1,62 @@
 // src/pages/create-profile.js
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useAuth } from '../components/AuthProvider';
 import ProfileCreate from '../components/ProfileCreate';
+import LoadingIndicator from '../components/LoadingIndicator';
+import { ensureWalletConnected } from '../utils/wallet-helper';
 
 export default function CreateProfilePage() {
-  const { connected } = useWallet();
+  const { connected, connecting } = useWallet();
   const { isAuthenticated, loading } = useAuth();
   const router = useRouter();
+  const [mounted, setMounted] = useState(false);
+  const [preparingWallet, setPreparingWallet] = useState(false);
+  const wallet = useWallet();
 
+  // Ensure client-side only rendering
   useEffect(() => {
-    if (!loading && !connected) {
+    setMounted(true);
+  }, []);
+
+  // Handle navigation based on auth state
+  useEffect(() => {
+    if (!mounted) return;
+    
+    if (!loading && !connected && !connecting) {
       router.push('/');
     }
     
     if (!loading && isAuthenticated) {
       router.push('/');
     }
-  }, [connected, isAuthenticated, loading, router]);
+  }, [connected, isAuthenticated, loading, router, mounted, connecting]);
 
-  if (loading) {
-    return <div className="text-center py-8">Loading...</div>;
+  // Prepare wallet when page loads
+  useEffect(() => {
+    const prepareWallet = async () => {
+      if (!mounted || !connected) return;
+      
+      try {
+        setPreparingWallet(true);
+        await ensureWalletConnected(wallet);
+      } catch (error) {
+        console.error("Error preparing wallet:", error);
+      } finally {
+        setPreparingWallet(false);
+      }
+    };
+    
+    prepareWallet();
+  }, [mounted, connected, wallet]);
+
+  if (!mounted) {
+    return <LoadingIndicator message="Initializing" />;
+  }
+
+  if (loading || preparingWallet) {
+    return <LoadingIndicator message="Preparing profile creation" />;
   }
 
   if (!connected) {

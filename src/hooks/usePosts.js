@@ -1,25 +1,29 @@
-// src/hooks/usePosts.js
 import { useCallback } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { PublicKey } from '@solana/web3.js';
 import { getMetaplex, fetchCollectionNFTs, createSocialNFT } from '../utils/metaplex';
 import { COLLECTION_ADDRESS, CONTENT_TYPES } from '../utils/constants';
-import { useArweave } from './useArweave';
+import { usePinata } from './usePinata';
 
 export const usePosts = () => {
   const { publicKey, wallet } = useWallet();
   const metaplex = publicKey ? getMetaplex(wallet) : null;
   const queryClient = useQueryClient();
-  const { uploadImage } = useArweave();
+  const { uploadImage } = usePinata();
 
-  // Fetch all posts
+  // Fetch all posts with error handling
   const fetchPosts = useCallback(async () => {
-    if (!metaplex || !COLLECTION_ADDRESS) return [];
+    if (!metaplex || !COLLECTION_ADDRESS) {
+      console.log("Metaplex or collection address not available for fetchPosts");
+      return [];
+    }
 
     try {
+      console.log("Fetching all posts");
       const posts = await fetchCollectionNFTs(metaplex, COLLECTION_ADDRESS, CONTENT_TYPES.POST);
       
+      console.log(`Mapping ${posts.length} posts`);
       return posts.map(nft => {
         const attributes = nft.json?.attributes || [];
         const authorAttr = attributes.find(attr => attr.trait_type === 'author');
@@ -110,7 +114,7 @@ export const usePosts = () => {
 
       let imageUrl = '';
       
-      // Upload image to Arweave if provided
+      // Upload image to Pinata if provided
       if (imageFile) {
         imageUrl = await uploadImage(imageFile);
       }
@@ -195,6 +199,11 @@ export const usePosts = () => {
     queryFn: fetchPosts,
     enabled: !!metaplex && !!COLLECTION_ADDRESS,
     staleTime: 1000 * 60 * 1, // 1 minute
+    retry: 1,
+    retryDelay: 1000,
+    onError: (error) => {
+      console.error("Posts query error:", error);
+    }
   });
 
   return {

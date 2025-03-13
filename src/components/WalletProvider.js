@@ -19,12 +19,18 @@ export default function WalletConnectionProvider({ children }) {
 
   // Add state to track if we're browser-side
   const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  
+  useEffect(() => {
+    setMounted(true);
+    console.log("Wallet provider mounted");
+  }, []);
 
+  // Only include supported wallet adapters
   const wallets = useMemo(
     () => [
       new PhantomWalletAdapter(),
       new SolflareWalletAdapter(),
+      // BackpackWalletAdapter is not available in your version - removed
     ],
     [network]
   );

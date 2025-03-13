@@ -5,20 +5,51 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { PublicKey } from '@solana/web3.js';
 import { getMetaplex, fetchCollectionNFTs, createSocialNFT } from '../utils/metaplex';
 import { COLLECTION_ADDRESS, CONTENT_TYPES } from '../utils/constants';
-import { useArweave } from './useArweave';
+import { usePinata } from './usePinata';
 
 export const useProfile = () => {
   const { publicKey, wallet } = useWallet();
   const metaplex = publicKey ? getMetaplex(wallet) : null;
   const queryClient = useQueryClient();
-  const { uploadImage } = useArweave();
+  const { uploadImage } = usePinata();
 
   const fetchProfileByWallet = useCallback(
     async (walletAddress) => {
-      if (!metaplex || !COLLECTION_ADDRESS) return null;
+      console.log("fetchProfileByWallet called for", walletAddress);
+      
+      if (!metaplex) {
+        console.error("No metaplex instance available for fetchProfileByWallet");
+        return null;
+      }
+      
+      if (!COLLECTION_ADDRESS) {
+        console.error("COLLECTION_ADDRESS not configured for fetchProfileByWallet");
+        return null;
+      }
 
       try {
+        console.log(`Fetching profiles from collection ${COLLECTION_ADDRESS}`);
+        
+        // Manual timeout handling
+        let hasTimedOut = false;
+        const timeoutId = setTimeout(() => {
+          console.error("Profile fetch operation timed out");
+          hasTimedOut = true;
+        }, 8000);
+        
+        // Fetch collection NFTs (this is what's likely timing out)
         const profiles = await fetchCollectionNFTs(metaplex, COLLECTION_ADDRESS, CONTENT_TYPES.PROFILE);
+        
+        // Clear timeout
+        clearTimeout(timeoutId);
+        
+        // If timeout occurred during the fetchCollectionNFTs call
+        if (hasTimedOut) {
+          console.error("Fetch completed after timeout - ignoring results");
+          return null;
+        }
+        
+        console.log(`Found ${profiles.length} profiles in collection`);
         
         // Find profile where author matches the wallet address
         const profile = profiles.find(nft => {
@@ -27,8 +58,13 @@ export const useProfile = () => {
           return authorAttr?.value === walletAddress;
         });
 
-        if (!profile) return null;
+        if (!profile) {
+          console.log(`No profile found for wallet: ${walletAddress}`);
+          return null;
+        }
 
+        console.log(`Found profile for wallet: ${walletAddress}`);
+        
         // Extract username from attributes
         const attributes = profile.json?.attributes || [];
         const usernameAttr = attributes.find(attr => attr.trait_type === 'username');
@@ -49,11 +85,16 @@ export const useProfile = () => {
     [metaplex]
   );
 
+  // Rest of the code remains unchanged...
   const { data: profile, isLoading: isLoadingProfile } = useQuery({
     queryKey: ['profile', publicKey?.toString()],
     queryFn: () => fetchProfileByWallet(publicKey.toString()),
     enabled: !!publicKey && !!metaplex && !!COLLECTION_ADDRESS,
     staleTime: 1000 * 60 * 5, // 5 minutes
+    // Add error handling and retry logic
+    retry: 1,
+    retryDelay: 1000,
+    onError: (error) => console.error("Profile query error:", error)
   });
 
   const createProfile = useMutation({
@@ -62,9 +103,9 @@ export const useProfile = () => {
         throw new Error('Wallet not connected or collection not configured');
       }
 
-      let imageUrl = 'https://arweave.net/placeholder-default-avatar';
+      let imageUrl = 'https://gateway.pinata.cloud/ipfs/QmDefaultAvatarHash'; // Update with your default avatar IPFS hash
       
-      // Upload image to Arweave if provided
+      // Upload image to Pinata if provided
       if (imageFile) {
         imageUrl = await uploadImage(imageFile);
       }

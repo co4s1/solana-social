@@ -1,8 +1,7 @@
 // src/pages/api/upload.js
 import formidable from 'formidable';
-import Arweave from 'arweave';
 import fs from 'fs';
-import path from 'path';
+import axios from 'axios';
 
 // Configure formidable for file parsing
 export const config = {
@@ -10,13 +9,6 @@ export const config = {
     bodyParser: false,
   },
 };
-
-// Initialize Arweave client
-const arweave = Arweave.init({
-  host: 'arweave.net',
-  port: 443,
-  protocol: 'https',
-});
 
 // Parse form data
 const parseForm = (req) => {
@@ -30,36 +22,62 @@ const parseForm = (req) => {
   });
 };
 
-// Upload file to Arweave
-const uploadToArweave = async (filePath) => {
+// Upload file to Pinata
+const uploadToPinata = async (filePath) => {
   try {
     // Read the file
     const fileData = fs.readFileSync(filePath);
     
-    // Get JWK from environment variable
-    // WARNING: In production, you should use a more secure method for storing keys
-    const jwk = JSON.parse(process.env.ARWEAVE_KEY);
+    // Create form data for Pinata
+    const formData = new FormData();
+    formData.append('file', new Blob([fileData]));
     
-    // Create transaction
-    const transaction = await arweave.createTransaction({ data: fileData }, jwk);
+    // Add metadata
+    const metadata = JSON.stringify({
+      name: `SolSocial-${Date.now()}`,
+      keyvalues: {
+        app: 'SolSocial',
+        timestamp: Date.now().toString(),
+      }
+    });
+    formData.append('pinataMetadata', metadata);
     
-    // Add tags to identify the file
-    transaction.addTag('Content-Type', 'image/jpeg');
-    transaction.addTag('App-Name', 'SolSocial');
+    // Add options
+    const options = JSON.stringify({
+      cidVersion: 1,
+    });
+    formData.append('pinataOptions', options);
     
-    // Sign the transaction
-    await arweave.transactions.sign(transaction, jwk);
+    // Get API keys from environment variables
+    const pinataApiKey = process.env.PINATA_API_KEY;
+    const pinataSecretApiKey = process.env.PINATA_SECRET_API_KEY;
     
-    // Submit transaction
-    const response = await arweave.transactions.post(transaction);
+    if (!pinataApiKey || !pinataSecretApiKey) {
+      throw new Error('Pinata API keys not configured');
+    }
     
-    if (response.status === 200 || response.status === 202) {
-      return `https://arweave.net/${transaction.id}`;
+    // Make request to Pinata API
+    const response = await axios.post(
+      'https://api.pinata.cloud/pinning/pinFileToIPFS',
+      formData,
+      {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          pinata_api_key: pinataApiKey,
+          pinata_secret_api_key: pinataSecretApiKey,
+        },
+      }
+    );
+    
+    if (response.status === 200) {
+      // Return the IPFS gateway URL for easy access
+      // You can use any public IPFS gateway
+      return `https://gateway.pinata.cloud/ipfs/${response.data.IpfsHash}`;
     } else {
-      throw new Error('Failed to upload to Arweave');
+      throw new Error('Failed to upload to Pinata');
     }
   } catch (error) {
-    console.error('Arweave upload error:', error);
+    console.error('Pinata upload error:', error);
     throw error;
   }
 };
@@ -89,8 +107,8 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Invalid file type. Only JPEG, PNG, and GIF are allowed' });
     }
 
-    // Upload to Arweave
-    const url = await uploadToArweave(file.filepath);
+    // Upload to Pinata
+    const url = await uploadToPinata(file.filepath);
 
     // Return the URL
     return res.status(200).json({ url });
