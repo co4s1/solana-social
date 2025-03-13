@@ -22,6 +22,7 @@ export default function AuthProvider({ children }) {
   const router = useRouter();
   const { fetchProfileByWallet } = useProfile();
   const [mounted, setMounted] = useState(false);
+  const [timeoutOccurred, setTimeoutOccurred] = useState(false);
 
   // Handle client-side only rendering
   useEffect(() => {
@@ -52,7 +53,7 @@ export default function AuthProvider({ children }) {
     }
     
     // Check if wallet adapter is initialized
-    if (!wallet || !wallet.adapter || !wallet.adapter.publicKey) {
+    if (!wallet || !wallet.adapter) {
       console.log("Wallet adapter not fully initialized yet");
       setLoading(true);
       return;
@@ -63,6 +64,7 @@ export default function AuthProvider({ children }) {
         console.log("Checking profile for wallet:", publicKey.toString());
         setLoading(true);
         setError(null);
+        setTimeoutOccurred(false);
         
         // Check if collection address is configured
         if (!COLLECTION_ADDRESS) {
@@ -72,30 +74,45 @@ export default function AuthProvider({ children }) {
           return;
         }
         
-        // Use a safer approach with a separate timeout
-        let timeoutId = setTimeout(() => {
-          console.log("Profile fetch timed out");
-          setLoading(false);
-          setError("Profile fetch timed out, but you can still use the app");
-        }, 10000);
+        // Modified timeout handling
+        let fetchCompleted = false;
         
-        // Fetch profile (without the race)
+        // Set up timeout
+        const timeoutId = setTimeout(() => {
+          if (!fetchCompleted) {
+            console.log("Profile fetch timed out");
+            setTimeoutOccurred(true);
+            setLoading(false);
+            setError("Profile fetch timed out, but you can still use the app");
+          }
+        }, 8000);
+        
+        // Fetch profile
         try {
           const profile = await fetchProfileByWallet(publicKey.toString());
+          fetchCompleted = true;
           
-          // Clear the timeout since we got a response
-          clearTimeout(timeoutId);
-          
-          console.log("Profile loaded:", profile);
-          setUserProfile(profile);
-          setLoading(false);
+          // Only update state if timeout hasn't occurred
+          if (!timeoutOccurred) {
+            console.log("Profile loaded:", profile);
+            setUserProfile(profile);
+            setLoading(false);
+            
+            // Clear the timeout
+            clearTimeout(timeoutId);
+          }
         } catch (profileError) {
-          // Clear the timeout since we got a response (even if it's an error)
-          clearTimeout(timeoutId);
+          fetchCompleted = true;
           
-          console.error("Error during profile fetch:", profileError);
-          setError(profileError.message);
-          setLoading(false);
+          // Only update state if timeout hasn't occurred
+          if (!timeoutOccurred) {
+            console.error("Error during profile fetch:", profileError);
+            setError(profileError.message);
+            setLoading(false);
+            
+            // Clear the timeout
+            clearTimeout(timeoutId);
+          }
         }
       } catch (error) {
         console.error('Error in checkProfile:', error);
@@ -105,14 +122,14 @@ export default function AuthProvider({ children }) {
       }
     };
 
-    // Check profile immediately (instead of using a delay)
+    // Check profile immediately
     checkProfile();
     
-    // Return cleanup function to cancel any pending operations
+    // Return cleanup function
     return () => {
       console.log("AuthProvider cleanup");
     };
-  }, [connected, publicKey, fetchProfileByWallet, mounted, connecting, wallet]);
+  }, [connected, publicKey, fetchProfileByWallet, mounted, connecting, wallet, timeoutOccurred]);
 
   const value = {
     isAuthenticated: connected && !!userProfile,

@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/router';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useProfile } from '../hooks/useProfile';
-import ImageUpload from './ImageUpload';
+import ImageUpload from '../components/ImageUpload';
 import { MAX_CHAR_COUNT } from '../utils/constants';
 import { ensureWalletConnected } from '../utils/wallet-helper';
 

@@ -3,7 +3,7 @@ import { Metaplex, walletAdapterIdentity, irysStorage } from '@metaplex-foundati
 import { PublicKey } from '@solana/web3.js';
 import { getConnection } from './solana';
 
-// IMPORTANT: Create a new Metaplex instance each time to avoid initialization issues
+// Create a new Metaplex instance with better error handling
 export const getMetaplex = (wallet) => {
   if (!wallet) {
     console.error("No wallet provided to getMetaplex");
@@ -11,12 +11,14 @@ export const getMetaplex = (wallet) => {
   }
   
   try {
-    // No longer checking for adapter initialization or caching the instance
-    // This avoids the initialization error completely
     const connection = getConnection();
     
-    // Always create a new instance
-    return Metaplex.make(connection)
+    // Create a new instance with more conservative settings
+    return Metaplex.make(connection, {
+      cluster: 'devnet',
+      // Lower timeout parameters to fail faster
+      sendTransactionTimeout: 30000,
+    })
       .use(walletAdapterIdentity(wallet))
       .use(irysStorage());
   } catch (error) {
@@ -24,6 +26,11 @@ export const getMetaplex = (wallet) => {
     return null;
   }
 };
+
+// Improved NFT collection fetching with better error handling and caching
+let cachedCollectionNFTs = {};
+let lastCacheTime = 0;
+const CACHE_DURATION = 60000; // 1 minute cache
 
 export const fetchCollectionNFTs = async (metaplex, collectionAddress, type = null) => {
   if (!metaplex) {
@@ -36,62 +43,79 @@ export const fetchCollectionNFTs = async (metaplex, collectionAddress, type = nu
     return [];
   }
   
+  const cacheKey = `${collectionAddress}-${type || 'all'}`;
+  const now = Date.now();
+  
+  // Check cache first if it's still valid
+  if (cachedCollectionNFTs[cacheKey] && (now - lastCacheTime < CACHE_DURATION)) {
+    console.log(`Using cached NFTs for ${cacheKey}`);
+    return cachedCollectionNFTs[cacheKey];
+  }
+  
   try {
     console.log(`Fetching NFTs from collection ${collectionAddress} with type ${type}`);
     
-    // Safer timeout approach
-    let hasTimedOut = false;
-    const timeoutId = setTimeout(() => {
-      console.log("Collection fetch operation timed out");
-      hasTimedOut = true;
-    }, 15000);
-    
-    const collection = new PublicKey(collectionAddress);
-    
-    // Try to fetch the NFTs
-    let nfts = [];
-    try {
-      // Use a lower limit to avoid rate limiting
-      nfts = await metaplex.nfts().findAllByCreator({ creator: collection, limit: 50 });
-    } catch (fetchError) {
-      console.error("Error during NFT fetch:", fetchError);
-      clearTimeout(timeoutId);
-      
-      // If rate limited, return empty array to avoid crashing the app
-      if (fetchError.message && fetchError.message.includes('429')) {
-        console.log("Rate limited while fetching NFTs, returning empty array");
-        return [];
+    // Implement timeout with Promise.race
+    const fetchPromise = (async () => {
+      try {
+        const collection = new PublicKey(collectionAddress);
+        
+        // Use a lower limit to avoid rate limiting
+        const nfts = await metaplex.nfts().findAllByCreator({ 
+          creator: collection, 
+          limit: 50 
+        });
+        
+        console.log(`Found ${nfts.length} NFTs in collection`);
+        
+        // Filter by type if specified
+        if (type) {
+          const filteredNfts = nfts.filter(nft => {
+            if (!nft.json || !nft.json.attributes) return false;
+            
+            const attributes = nft.json.attributes;
+            const typeAttribute = attributes.find(attr => attr.trait_type === 'type');
+            return typeAttribute?.value === type;
+          });
+          
+          console.log(`Found ${filteredNfts.length} NFTs of type ${type}`);
+          
+          // Cache the results
+          cachedCollectionNFTs[cacheKey] = filteredNfts;
+          lastCacheTime = now;
+          
+          return filteredNfts;
+        }
+        
+        // Cache all NFTs
+        cachedCollectionNFTs[cacheKey] = nfts;
+        lastCacheTime = now;
+        
+        return nfts;
+      } catch (fetchError) {
+        console.error("Error during NFT fetch:", fetchError);
+        
+        // If rate limited, try to use cache even if expired
+        if (fetchError.message && fetchError.message.includes('429') && cachedCollectionNFTs[cacheKey]) {
+          console.log("Rate limited, using expired cache");
+          return cachedCollectionNFTs[cacheKey];
+        }
+        
+        throw fetchError;
       }
-      
-      return [];
-    }
+    })();
     
-    // Clear the timeout since we got a response
-    clearTimeout(timeoutId);
+    // Set a timeout of 10 seconds
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error("Collection fetch timed out")), 10000)
+    );
     
-    // If timeout occurred during the fetch
-    if (hasTimedOut) {
-      console.log("Fetch completed after timeout - using results anyway");
-      // We'll still use the results if we got them even after timeout
-    }
-    
-    console.log(`Found ${nfts.length} NFTs in collection`);
-    
-    // Filter by type if specified
-    if (type) {
-      const filteredNfts = nfts.filter(nft => {
-        const attributes = nft.json?.attributes || [];
-        const typeAttribute = attributes.find(attr => attr.trait_type === 'type');
-        return typeAttribute?.value === type;
-      });
-      
-      console.log(`Found ${filteredNfts.length} NFTs of type ${type}`);
-      return filteredNfts;
-    }
-    
-    return nfts;
+    // Race between fetch and timeout
+    return await Promise.race([fetchPromise, timeoutPromise]);
   } catch (error) {
     console.error('Error fetching collection NFTs:', error);
+    
+    // Return empty array on error
     return [];
   }
 };
@@ -167,6 +191,9 @@ export const createSocialNFT = async (
       nftOrSft: nft,
       uri,
     });
+
+    // After successful creation, invalidate cache
+    cachedCollectionNFTs = {};
 
     console.log("NFT creation complete");
     return nft;

@@ -1,5 +1,5 @@
 // src/hooks/useProfile.js
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { PublicKey } from '@solana/web3.js';
@@ -7,15 +7,25 @@ import { getMetaplex, fetchCollectionNFTs, createSocialNFT } from '../utils/meta
 import { COLLECTION_ADDRESS, CONTENT_TYPES } from '../utils/constants';
 import { usePinata } from './usePinata';
 
+// Local cache for profile data to improve performance
+const profileCache = new Map();
+
 export const useProfile = () => {
   const { publicKey, wallet } = useWallet();
   const metaplex = publicKey ? getMetaplex(wallet) : null;
   const queryClient = useQueryClient();
   const { uploadImage } = usePinata();
+  const [lastError, setLastError] = useState(null);
 
   const fetchProfileByWallet = useCallback(
     async (walletAddress) => {
       console.log("fetchProfileByWallet called for", walletAddress);
+      
+      // Check cache first
+      if (profileCache.has(walletAddress)) {
+        console.log("Using cached profile for", walletAddress);
+        return profileCache.get(walletAddress);
+      }
       
       if (!metaplex) {
         console.error("No metaplex instance available for fetchProfileByWallet");
@@ -24,77 +34,93 @@ export const useProfile = () => {
       
       if (!COLLECTION_ADDRESS) {
         console.error("COLLECTION_ADDRESS not configured for fetchProfileByWallet");
+        setLastError("Collection address not configured. Please check your environment variables.");
         return null;
       }
 
       try {
         console.log(`Fetching profiles from collection ${COLLECTION_ADDRESS}`);
         
-        // Manual timeout handling
-        let hasTimedOut = false;
-        const timeoutId = setTimeout(() => {
-          console.error("Profile fetch operation timed out");
-          hasTimedOut = true;
-        }, 8000);
-        
-        // Fetch collection NFTs (this is what's likely timing out)
-        const profiles = await fetchCollectionNFTs(metaplex, COLLECTION_ADDRESS, CONTENT_TYPES.PROFILE);
-        
-        // Clear timeout
-        clearTimeout(timeoutId);
-        
-        // If timeout occurred during the fetchCollectionNFTs call
-        if (hasTimedOut) {
-          console.error("Fetch completed after timeout - ignoring results");
-          return null;
-        }
-        
-        console.log(`Found ${profiles.length} profiles in collection`);
-        
-        // Find profile where author matches the wallet address
-        const profile = profiles.find(nft => {
-          const attributes = nft.json?.attributes || [];
-          const authorAttr = attributes.find(attr => attr.trait_type === 'author');
-          return authorAttr?.value === walletAddress;
-        });
+        // Use Promise.race to implement timeout
+        const fetchPromise = async () => {
+          try {
+            // Fetch collection NFTs 
+            const profiles = await fetchCollectionNFTs(metaplex, COLLECTION_ADDRESS, CONTENT_TYPES.PROFILE);
+            
+            console.log(`Found ${profiles.length} profiles in collection`);
+            
+            // Find profile where author matches the wallet address
+            const profile = profiles.find(nft => {
+              if (!nft.json || !nft.json.attributes) return false;
+              
+              const attributes = nft.json.attributes;
+              const authorAttr = attributes.find(attr => attr.trait_type === 'author');
+              return authorAttr?.value === walletAddress;
+            });
 
-        if (!profile) {
-          console.log(`No profile found for wallet: ${walletAddress}`);
-          return null;
-        }
+            if (!profile) {
+              console.log(`No profile found for wallet: ${walletAddress}`);
+              return null;
+            }
 
-        console.log(`Found profile for wallet: ${walletAddress}`);
-        
-        // Extract username from attributes
-        const attributes = profile.json?.attributes || [];
-        const usernameAttr = attributes.find(attr => attr.trait_type === 'username');
-        
-        return {
-          address: profile.address.toString(),
-          name: profile.json?.name || '',
-          description: profile.json?.description || '',
-          image: profile.json?.image || '',
-          username: usernameAttr?.value || '',
-          authorAddress: walletAddress,
+            console.log(`Found profile for wallet: ${walletAddress}`);
+            
+            // Extract username from attributes
+            const attributes = profile.json?.attributes || [];
+            const usernameAttr = attributes.find(attr => attr.trait_type === 'username');
+            
+            const profileData = {
+              address: profile.address.toString(),
+              name: profile.json?.name || '',
+              description: profile.json?.description || '',
+              image: profile.json?.image || '',
+              username: usernameAttr?.value || '',
+              authorAddress: walletAddress,
+            };
+            
+            // Update cache
+            profileCache.set(walletAddress, profileData);
+            
+            return profileData;
+          } catch (error) {
+            console.error("Error in fetch promise:", error);
+            throw error;
+          }
         };
+        
+        // Set a 8-second timeout
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error("Profile fetch timed out")), 8000)
+        );
+        
+        // Race between fetch and timeout
+        return await Promise.race([fetchPromise(), timeoutPromise]);
       } catch (error) {
         console.error('Error fetching profile by wallet:', error);
+        setLastError(error.message || "Error fetching profile");
         return null;
       }
     },
     [metaplex]
   );
 
-  // Rest of the code remains unchanged...
-  const { data: profile, isLoading: isLoadingProfile } = useQuery({
+  // Optimized query with better error handling
+  const { 
+    data: profile, 
+    isLoading: isLoadingProfile,
+    error: profileError 
+  } = useQuery({
     queryKey: ['profile', publicKey?.toString()],
     queryFn: () => fetchProfileByWallet(publicKey.toString()),
     enabled: !!publicKey && !!metaplex && !!COLLECTION_ADDRESS,
     staleTime: 1000 * 60 * 5, // 5 minutes
     // Add error handling and retry logic
-    retry: 1,
+    retry: 2,
     retryDelay: 1000,
-    onError: (error) => console.error("Profile query error:", error)
+    onError: (error) => {
+      console.error("Profile query error:", error);
+      setLastError(error.message || "Error loading profile");
+    }
   });
 
   const createProfile = useMutation({
@@ -103,11 +129,16 @@ export const useProfile = () => {
         throw new Error('Wallet not connected or collection not configured');
       }
 
-      let imageUrl = 'https://gateway.pinata.cloud/ipfs/QmDefaultAvatarHash'; // Update with your default avatar IPFS hash
+      let imageUrl = ''; // Default empty URL
       
       // Upload image to Pinata if provided
       if (imageFile) {
-        imageUrl = await uploadImage(imageFile);
+        try {
+          imageUrl = await uploadImage(imageFile);
+        } catch (imageError) {
+          console.error("Image upload failed:", imageError);
+          // Continue without image rather than failing completely
+        }
       }
 
       const attributes = [
@@ -117,17 +148,38 @@ export const useProfile = () => {
         },
       ];
 
-      return createSocialNFT(metaplex, COLLECTION_ADDRESS, {
+      // Create the profile NFT
+      const nft = await createSocialNFT(metaplex, COLLECTION_ADDRESS, {
         type: CONTENT_TYPES.PROFILE,
         name: `Profile #${username}`,
-        description: bio,
+        description: bio || '',
         image: imageUrl,
         attributes,
       });
+      
+      // Create profile data to add to cache immediately
+      const profileData = {
+        address: nft.address.toString(),
+        name: `Profile #${username}`,
+        description: bio || '',
+        image: imageUrl,
+        username: username,
+        authorAddress: publicKey.toString(),
+      };
+      
+      // Update cache immediately for better UX
+      profileCache.set(publicKey.toString(), profileData);
+      
+      return nft;
     },
     onSuccess: () => {
+      // Invalidate queries
       queryClient.invalidateQueries({ queryKey: ['profile', publicKey?.toString()] });
     },
+    onError: (error) => {
+      console.error("Profile creation error:", error);
+      setLastError(error.message || "Failed to create profile");
+    }
   });
 
   const fetchProfileByAddress = useCallback(
@@ -148,14 +200,24 @@ export const useProfile = () => {
         const usernameAttr = attributes.find(attr => attr.trait_type === 'username');
         const authorAttr = attributes.find(attr => attr.trait_type === 'author');
         
-        return {
+        const authorAddress = authorAttr?.value || '';
+        
+        // Create profile data
+        const profileData = {
           address: nft.address.toString(),
           name: nft.json?.name || '',
           description: nft.json?.description || '',
           image: nft.json?.image || '',
           username: usernameAttr?.value || '',
-          authorAddress: authorAttr?.value || '',
+          authorAddress: authorAddress,
         };
+        
+        // Update cache if we have author address
+        if (authorAddress) {
+          profileCache.set(authorAddress, profileData);
+        }
+        
+        return profileData;
       } catch (error) {
         console.error('Error fetching profile by address:', error);
         return null;
@@ -164,11 +226,19 @@ export const useProfile = () => {
     [metaplex]
   );
 
+  // Manually clear profile cache
+  const clearProfileCache = () => {
+    profileCache.clear();
+    queryClient.invalidateQueries({ queryKey: ['profile'] });
+  };
+
   return {
     profile,
     isLoadingProfile,
+    error: profileError || lastError,
     createProfile,
     fetchProfileByWallet,
     fetchProfileByAddress,
+    clearProfileCache
   };
 };
